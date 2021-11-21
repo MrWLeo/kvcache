@@ -32,7 +32,7 @@
 #include "register.p4"
 #include "read_handle.p4"
 #include "write_handle.p4"
-
+#include "process_data.p4"
 // ---------------------------------------------------------------------------
 // Ingress parser
 // ---------------------------------------------------------------------------
@@ -217,31 +217,24 @@ control SwitchIngress(
         ig_md.ing_mir_ses = 1;
     }
 
-    RegisterAction<bit<16> , INDEX_WIDTH , bit<16> >(reg_server_load) update_server_load_action = {
-        void apply(inout bit<16> value, out bit<16> result){
-            result = value;
-            value = hdr.unicache.server_load;
-        }
-    };
 
-
-    RegisterAction<bit<16> , INDEX_WIDTH , bit<16> >(reg_total_load) update_total_load_action = {
+    RegisterAction<bit<16>, INDEX_WIDTH, bit<16>>(reg_server_load) update_server_load_action = {
         void apply(inout bit<16> value, out bit<16> result){
-            value = value + ig_md.add_load;
+            if (hdr.unicache.server_load > LOAD_BOUNDER){
+                value = 1;
+                result = 1;
+            }
+            else result = 0;
         }
     };
 
     action update_server_load(){
-        ig_md.pre_server_load = update_server_load_action.execute((bit<16>)hdr.unicache.server_id);
-    }
-
-    action update_total_load(){
-        ig_md.total_load = update_total_load_action.execute(0);
+        ig_md.server_load = update_server_load_action.execute(0);
     }
 
     RegisterAction<bit<8> , INDEX_WIDTH , bit<8> >(reg_sample) update_sample_action = {
         void apply(inout bit<8> value, out bit<8> result){
-            if (value >= 100){
+            if (value >= 10){
                 value = 1;
             }
             else{
@@ -273,21 +266,61 @@ control SwitchIngress(
         }
     }
 
+    RegisterAction<bit<8> , INDEX_WIDTH , bit<8> >(reg_cache_flag) get_cache_flag_action = {
+        void apply(inout bit<8> value, out bit<8> result){
+            if (hdr.unicache.op == OP_WRITE || hdr.unicache.op == OP_UPDATE_CACHE){
+                value = hdr.unicache.op & 1;
+            }
+            result = value;
+        }
+    };
+
+    action get_cache_flag(){
+         ig_md.cache_flag = get_cache_flag_action.execute(ig_md.index);
+    }    
+
+    action get_data_index(bit<16> index){
+        ig_md.data_index = index;
+    }
+
+    table tab_get_data_index{
+        key = {
+           ig_md.index : exact;
+           hdr.unicache.pkg_offset : exact;
+        }
+        actions = {
+            get_data_index;
+        }
+    }
+
+
+    action set_copy_server(mac_addr_t mac_dst_addr, ipv4_addr_t ipv4_dst_addr, PortId_t port){
+        ig_intr_tm_md.ucast_egress_port = port;
+        hdr.ethernet.dst_addr = mac_dst_addr;
+        hdr.ipv4.dst_addr = ipv4_dst_addr;
+    }
+
+//    @pragma stage 5
+    table tab_set_copy_server{
+        key = {
+            ig_md.copy_server_id : exact;
+        } 
+        actions = {
+            set_copy_server;
+        }
+    }
+
 
     Read_Handle() read_handle;
-    Read_Reply_Handle() read_reply_handle;
     Write_Handle() write_handle;
     Write_Reply_Handle() write_reply_handle;
-
-    Get_Cache_Data() rcd;
-    
-    Update_Cache_Data() u;
+    Get_Cache_Data() read_data;
+    Update_Cache_Data() update_data;
 
     apply{
         if (hdr.unicache.isValid()){
             
             tab_get_partition_info.apply();
-
             ig_md.l4_forward_flag = 0;
 
             if (hdr.unicache.status == ON_QUERY){
@@ -296,96 +329,48 @@ control SwitchIngress(
             }
 
             if (hdr.ipv4.dst_addr == ig_md.sw_addr){
-                
-                if (ig_md.sw_role == MASTER){
-                    if (hdr.unicache.op == OP_READ_REP){
-                        update_server_load();
-                        
-                        ig_md.add_load = hdr.unicache.server_load - ig_md.pre_server_load;
-                        update_total_load();
-                        forward_to_client();
-                        /*
-                        if (ig_md.cache_num < MAX_REPLICATE_NUM){
-                            if (ig_md.server_load>1000){  // threshold
-                                if (ig_md.total_load>10000){
-                                     //extend to other rack
-                                     hdr.unicache.status = ON_COPY_INTER;
-                                }
-                                else {
-                                    //extend to other server in rack
-                                    hdr.unicache.status = ON_COPY_INNER;
-                                }
-                                set_mirror();
-                            }
-                        }
-                        */
-                    }
-                    else if (hdr.unicache.op == OP_WRITE_REP){
-                        update_server_load();
-                        
-                        ig_md.add_load = hdr.unicache.server_load - ig_md.pre_server_load;
-                        update_total_load();
-                        forward_to_client();
-                    }
-
-                    /*
-                    if (hdr.unicache.op == OP_COPY_INNER){
-                        hdr.unicache.op = OP_WRITE;
-                        ig_md.dst_node = 1; // random pick
-                        ig_md.l4_forward_flag = 1;
-                    }
-                    else if (hdr.unicache.op == OP_COPY_INTER){
-                        ig_md.masterId = 1; // random pick
-                        tab_forward_to_other_master.apply();
-                    }
-
-                    if (hdr.unicache.op == OP_COPY_REPLY){
-                        hdr.unicache.op = OP_WRITE;
-                        ig_md.dst_node = hdr.unicache.server_id;
-                        ig_md.l4_forward_flag = 1;
-                    }
-
-                    if (hdr.unicache.op == OP_COPY_REQUEST){
-                        if (ig_md.total_load < 10000){
-                            // select a server  
-                            hdr.unicache.server_id = 1;
-                            hdr.unicache.op = OP_COPY;
-                            hdr.ipv4_dst_addr = hdr.ipv4.src_addr; 
-                        }
-                    }
-                    */
-                }
 
                 tab_cache_check.apply();
                 if (ig_md.index != UNCACHED){
-                    if (hdr.unicache.op == OP_READ){
-                        read_handle.apply(hdr,ig_md);
-                        ig_md.l4_forward_flag = 1;
+                    get_cache_flag();
+                    tab_get_data_index.apply();
+
+                    if (hdr.unicache.op == OP_READ && ig_md.cache_flag == 1){
+                        read_data.apply(hdr,ig_md.data_index);
+                        if (hdr.unicache.pkg_offset != hdr.unicache.pkg_num)
+                            ig_md.mirrir_flag = 1;
+                    }
+                    else if (hdr.unicache.op == OP_UPDATE_CACHE){
+                        update_data.apply(hdr,ig_md.data_index);
                     }
                     else if (hdr.unicache.op == OP_WRITE){
                         write_handle.apply(hdr,ig_md);
+                    }
+                    else if (hdr.unicache.op == OP_WRITE_REP){
+                        write_reply_handle.apply(hdr,ig_md);
+                    }
+                    else if (hdr.unicache.op == OP_READ && ig_md.cache_flag == 0){
+                        read_handle.apply(hdr,ig_md);
                         ig_md.l4_forward_flag = 1;
                     }
-                    else if (hdr.unicache.op == OP_READ_REP_CACHE){
-                        read_reply_handle.apply(hdr,ig_md);
+                    else if (hdr.unicache.op == OP_READ_REP){
+                        update_server_load();
+                        if (ig_md.server_load == 1) {
+                            ig_md.mirrir_flag = 1;
+                        }
                     }
-                    else {
-                        if (hdr.unicache.op == OP_WRITE_REP){
-                            write_reply_handle.apply(hdr,ig_md);
-                        }
-                        //update_sample();
-                        if (ig_md.sample > 90){
-                            tab_forward_to_master.apply();
-                        }
-                        else {
-                            forward_to_client();
-                        }
+                    else if (hdr.unicache.op == OP_COPY){
+                        ig_md.copy_server_id = 1;
+                        tab_set_copy_server.apply();
                     }
                 }
-
             }
-
         }
+
+        if (ig_md.mirrir_flag == 1){
+            set_mirror();
+        }
+
         if (ig_md.l4_forward_flag == 1){
             tab_unicache_forward.apply();
         }
@@ -399,7 +384,7 @@ control SwitchIngress(
 // ---------------------------------------------------------------------------
 // Egress parser
 // ---------------------------------------------------------------------------
-/*
+
 parser SwitchEgressParser(
         packet_in pkt,
         out header_t hdr,
@@ -475,11 +460,14 @@ control SwitchEgress(
     apply {
         if (eg_intr_md.egress_port == RECIR_PORT){//recirculate port
             if (hdr.unicache.op == OP_READ){
-                hdr.unicache.pkg_offset = hdr.unicache.pkg_offset + 1;
+                 hdr.unicache.pkg_offset = hdr.unicache.pkg_offset + 1;
             }
-            else if (hdr.unicache.op == OP_READ_REP_CACHE){
+            else if (hdr.unicache.op == OP_UPDATE_CACHE){
                 hdr.unicache.op = OP_ACK;
                 hdr.ipv4.dst_addr = hdr.unicache.server_addr;
+            }
+            else if (hdr.unicache.op == OP_READ_REP){
+                hdr.unicache.op = OP_COPY;
             }
 
             
@@ -495,13 +483,20 @@ control SwitchEgress(
         }
     }
 }
-*/
 
 Pipeline(SwitchIngressParser(),
          SwitchIngress(),
          SwitchIngressDeparser(),
-         EmptyEgressParser<header_t, metadata_t>(),
-         EmptyEgress<header_t, metadata_t>(),
-         EmptyEgressDeparser<header_t, metadata_t>()) pipe;
+         SwitchEgressParser(),
+         SwitchEgress(),
+         SwitchEgressDeparser()) pipe;
+
+
+// Pipeline(SwitchIngressParser(),
+//          SwitchIngress(),
+//          SwitchIngressDeparser(),
+//          EmptyEgressParser<header_t, metadata_t>(),
+//          EmptyEgress<header_t, metadata_t>(),
+//          EmptyEgressDeparser<header_t, metadata_t>()) pipe;
 
 Switch(pipe) main;
