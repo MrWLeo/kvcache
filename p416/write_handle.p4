@@ -20,7 +20,7 @@ control Write_Handle(
 
     apply{
         get_global_version();
-        get_default_server_index();
+        //get_default_server_index();
     }
 }
 
