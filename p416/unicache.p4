@@ -232,22 +232,6 @@ control SwitchIngress(
         ig_md.server_load = update_server_load_action.execute(0);
     }
 
-    RegisterAction<bit<8> , INDEX_WIDTH , bit<8> >(reg_sample) update_sample_action = {
-        void apply(inout bit<8> value, out bit<8> result){
-            if (value >= 10){
-                value = 1;
-            }
-            else{
-                value = value + 1;
-            }
-            result = value;
-        }
-    };
-
-    action update_sample(){
-        ig_md.sample = update_sample_action.execute(0);
-    }
-
     action forward_to_client(){
         hdr.ipv4.dst_addr = hdr.unicache.client_addr;
         hdr.unicache.op = OP_REP_TO_C;
@@ -360,7 +344,7 @@ control SwitchIngress(
                         }
                     }
                     else if (hdr.unicache.op == OP_COPY){
-                        ig_md.copy_server_id = 1;
+                        ig_md.copy_server_id = hash_serverId.get({hdr.unicache.server_id},0,8);
                         tab_set_copy_server.apply();
                     }
                 }
