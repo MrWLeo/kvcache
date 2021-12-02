@@ -65,16 +65,19 @@ parser SwitchIngressParser(
 
     state parse_udp {
         pkt.extract(hdr.udp);
-        transition parse_apphdr;
-    }
-
-    state parse_apphdr{
-        pkt.extract(hdr.apphdr);
-        transition select(hdr.apphdr.appid){
-            APPHDR_UNICACHE : parse_unicache;
-            default : accept;
+        transition select(hdr.udp.dst_port){
+            12345 : parse_unicache;
+            default: accept;
         }
     }
+
+    // state parse_apphdr{
+    //     pkt.extract(hdr.apphdr);
+    //     transition select(hdr.apphdr.appid){
+    //         APPHDR_UNICACHE : parse_unicache;
+    //         default : accept;
+    //     }
+    // }
 
     state parse_unicache{
         pkt.extract(hdr.unicache);
@@ -234,20 +237,7 @@ control SwitchIngress(
 
     action forward_to_client(){
         hdr.ipv4.dst_addr = hdr.unicache.client_addr;
-        hdr.unicache.op = OP_REP_TO_C;
-    }
-
-    action forward_to_master(ipv4_addr_t addr){
-        hdr.ipv4.dst_addr = addr;
-    }
-
-    table tab_forward_to_master{
-        key = {
-           hdr.unicache.key : exact;
-        }
-        actions = {
-            forward_to_master;
-        }
+        //hdr.unicache.op = OP_REP_TO_C;
     }
 
     RegisterAction<bit<8> , INDEX_WIDTH , bit<8> >(reg_cache_flag) get_cache_flag_action = {
@@ -294,6 +284,32 @@ control SwitchIngress(
         }
     }
 
+    action forward_to_server(){
+        hdr.ipv4.dst_addr = hdr.unicache.server_addr;
+    }
+
+
+    RegisterAction<bit<8> , INDEX_WIDTH , bit<8> >(reg_pkt_num) get_pkt_num_action = {
+        void apply(inout bit<8> value, out bit<8> result){
+            result = value;
+        }
+    };
+
+    action get_pkt_num(){
+         hdr.unicache.pkg_num = get_pkt_num_action.execute(ig_md.index);
+    }    
+
+
+    RegisterAction<bit<8> , INDEX_WIDTH , bit<8> >(reg_pkt_num) set_pkt_num_action = {
+        void apply(inout bit<8> value, out bit<8> result){
+            value = hdr.unicache.pkg_num;
+        }
+    };
+
+    action set_pkt_num(){
+         set_pkt_num_action.execute(ig_md.index);
+    }    
+
 
     Read_Handle() read_handle;
     Write_Handle() write_handle;
@@ -302,10 +318,11 @@ control SwitchIngress(
     Update_Cache_Data() update_data;
 
     apply{
+
+        ig_md.l4_forward_flag = 0;
+
         if (hdr.unicache.isValid()){
-            
             tab_get_partition_info.apply();
-            ig_md.l4_forward_flag = 0;
 
             if (hdr.unicache.status == ON_QUERY){
                 tab_pre_check.apply();
@@ -320,32 +337,48 @@ control SwitchIngress(
                     tab_get_data_index.apply();
 
                     if (hdr.unicache.op == OP_READ && ig_md.cache_flag == 1){
+                        get_pkt_num();
                         read_data.apply(hdr,ig_md.data_index);
+                        ig_md.forward_dir = 1;
+                        hdr.ipv4.src_addr = ig_md.sw_addr;
                         if (hdr.unicache.pkg_offset != hdr.unicache.pkg_num)
                             ig_md.mirrir_flag = 1;
                     }
                     else if (hdr.unicache.op == OP_UPDATE_CACHE){
+                        set_pkt_num();
                         update_data.apply(hdr,ig_md.data_index);
+                        hdr.unicache.op = OP_ACK;
+                        hdr.ipv4.src_addr = ig_md.sw_addr;
+                        //forward_to_server();
                     }
                     else if (hdr.unicache.op == OP_WRITE){
                         write_handle.apply(hdr,ig_md);
                     }
                     else if (hdr.unicache.op == OP_WRITE_REP){
                         write_reply_handle.apply(hdr,ig_md);
+                        ig_md.forward_dir = 1;
                     }
                     else if (hdr.unicache.op == OP_READ && ig_md.cache_flag == 0){
-                        read_handle.apply(hdr,ig_md);
                         ig_md.l4_forward_flag = 1;
+                        read_handle.apply(hdr,ig_md);
                     }
                     else if (hdr.unicache.op == OP_READ_REP){
                         update_server_load();
                         if (ig_md.server_load == 1) {
                             ig_md.mirrir_flag = 1;
                         }
+                        ig_md.forward_dir = 1;
                     }
                     else if (hdr.unicache.op == OP_COPY){
                         ig_md.copy_server_id = hash_serverId.get({hdr.unicache.server_id},0,8);
                         tab_set_copy_server.apply();
+                    }
+                    
+                    if (ig_md.forward_dir == 0){
+                        forward_to_server();
+                    }
+                    else{
+                        forward_to_client();
                     }
                 }
             }
@@ -398,16 +431,19 @@ parser SwitchEgressParser(
 
     state parse_udp {
         pkt.extract(hdr.udp);
-        transition parse_apphdr;
-    }
-
-    state parse_apphdr{
-        pkt.extract(hdr.apphdr);
-        transition select(hdr.apphdr.appid){
-            APPHDR_UNICACHE : parse_unicache;
-            default : accept;
+        transition select(hdr.udp.dst_port){
+            12345 : parse_unicache;
+            default: accept;
         }
     }
+
+    // state parse_apphdr{
+    //     pkt.extract(hdr.apphdr);
+    //     transition select(hdr.apphdr.appid){
+    //         APPHDR_UNICACHE : parse_unicache;
+    //         default : accept;
+    //     }
+    // }
 
     state parse_unicache{
         pkt.extract(hdr.unicache);
@@ -453,16 +489,6 @@ control SwitchEgress(
             else if (hdr.unicache.op == OP_READ_REP){
                 hdr.unicache.op = OP_COPY;
             }
-
-            
-            // else if (hdr.unicache.op == OP_READ_REP){
-            //     if (hdr.unicache.status == ON_COPY_INNER){
-            //         hdr.unicache.op = OP_COPY_INNER;
-            //     }
-            //     else if (hdr.unicache.status == ON_COPY_INTER){
-            //         hdr.unicache.op = OP_COPY_INTER;
-            //     }
-            // }
             
         }
     }
