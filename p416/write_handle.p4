@@ -63,8 +63,8 @@ control Write_Reply_Handle(
 
     RegisterAction<bit<16> , INDEX_WIDTH , bit<16> >(reg_cache_index_num) set_cache_index_num_action = {
         void apply(inout bit<16> value, out bit<16> result){
-            result = 0;
             value = 1;
+            result = value;
         }
     };
 
