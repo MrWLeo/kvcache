@@ -71,14 +71,6 @@ parser SwitchIngressParser(
         }
     }
 
-    // state parse_apphdr{
-    //     pkt.extract(hdr.apphdr);
-    //     transition select(hdr.apphdr.appid){
-    //         APPHDR_UNICACHE : parse_unicache;
-    //         default : accept;
-    //     }
-    // }
-
     state parse_unicache{
         pkt.extract(hdr.unicache);
         transition accept;
@@ -96,7 +88,8 @@ control SwitchIngressDeparser(
     Mirror() mirror;
     apply {
         if (ig_dprsr_md.mirror_type == MIRROR_TYPE_I2E) {
-            mirror.emit(ig_md.ing_mir_ses);
+            //mirror.emit(ig_md.ing_mir_ses);
+            mirror.emit<mirror_h>(ig_md.ing_mir_ses,{ig_md.pkt_type});
         }
          pkt.emit(hdr);
     }
@@ -185,14 +178,13 @@ control SwitchIngress(
         const default_action = cache_unhit;
     }
 
-    action get_partition_info(bit<8> sw_role,ipv4_addr_t sw_addr){
-        ig_md.sw_role = sw_role;
+    action get_partition_info(ipv4_addr_t sw_addr){
         ig_md.sw_addr = sw_addr;
     }
 
     table tab_get_partition_info{
         key = {
-            hdr.unicache.key : exact;
+            ig_md.sw_role : exact;
         }
         actions = {
             get_partition_info;
@@ -218,6 +210,7 @@ control SwitchIngress(
     action set_mirror() {
         ig_intr_dprsr_md.mirror_type = MIRROR_TYPE_I2E;
         ig_md.ing_mir_ses = 1;
+        ig_md.pkt_type = 2;
     }
 
 
@@ -268,9 +261,8 @@ control SwitchIngress(
     }
 
 
-    action set_copy_server(mac_addr_t mac_dst_addr, ipv4_addr_t ipv4_dst_addr, PortId_t port){
+    action set_copy_server(ipv4_addr_t ipv4_dst_addr, PortId_t port){
         ig_intr_tm_md.ucast_egress_port = port;
-        hdr.ethernet.dst_addr = mac_dst_addr;
         hdr.ipv4.dst_addr = ipv4_dst_addr;
     }
 
@@ -310,7 +302,6 @@ control SwitchIngress(
          set_pkt_num_action.execute(ig_md.index);
     }    
 
-
     Read_Handle() read_handle;
     Write_Handle() write_handle;
     Write_Reply_Handle() write_reply_handle;
@@ -322,6 +313,7 @@ control SwitchIngress(
         ig_md.l4_forward_flag = 0;
 
         if (hdr.unicache.isValid()){
+
             tab_get_partition_info.apply();
 
             if (hdr.unicache.status == ON_QUERY){
@@ -335,12 +327,12 @@ control SwitchIngress(
                 if (ig_md.index != UNCACHED){
                     get_cache_flag();
                     tab_get_data_index.apply();
-
+                    hdr.ipv4.src_addr = ig_md.sw_addr;
                     if (hdr.unicache.op == OP_READ && ig_md.cache_flag == 1){
                         get_pkt_num();
                         read_data.apply(hdr,ig_md.data_index);
                         ig_md.forward_dir = 1;
-                        hdr.ipv4.src_addr = ig_md.sw_addr;
+                        //hdr.ipv4.src_addr = ig_md.sw_addr;
                         if (hdr.unicache.pkg_offset != hdr.unicache.pkg_num)
                             ig_md.mirrir_flag = 1;
                     }
@@ -348,7 +340,7 @@ control SwitchIngress(
                         set_pkt_num();
                         update_data.apply(hdr,ig_md.data_index);
                         hdr.unicache.op = OP_ACK;
-                        hdr.ipv4.src_addr = ig_md.sw_addr;
+                        //hdr.ipv4.src_addr = ig_md.sw_addr;
                         //forward_to_server();
                     }
                     else if (hdr.unicache.op == OP_WRITE){
@@ -377,7 +369,7 @@ control SwitchIngress(
                     if (ig_md.forward_dir == 0){
                         forward_to_server();
                     }
-                    else{
+                    else if (ig_md.forward_dir == 1){
                         forward_to_client();
                     }
                 }
@@ -387,6 +379,9 @@ control SwitchIngress(
         if (ig_md.mirrir_flag == 1){
             set_mirror();
         }
+
+        hdr.mirror.setValid();
+        hdr.mirror.pkt_type = 1;
 
         if (ig_md.l4_forward_flag == 1){
             tab_unicache_forward.apply();
@@ -412,6 +407,11 @@ parser SwitchEgressParser(
 
     state start {
         tofino_parser.apply(pkt, eg_intr_md);
+        transition parse_mirror;
+    }
+
+    state parse_mirror{
+        pkt.extract(hdr.mirror);
         transition parse_ethernet;
     }
 
@@ -437,14 +437,6 @@ parser SwitchEgressParser(
         }
     }
 
-    // state parse_apphdr{
-    //     pkt.extract(hdr.apphdr);
-    //     transition select(hdr.apphdr.appid){
-    //         APPHDR_UNICACHE : parse_unicache;
-    //         default : accept;
-    //     }
-    // }
-
     state parse_unicache{
         pkt.extract(hdr.unicache);
         transition accept;
@@ -461,7 +453,10 @@ control SwitchEgressDeparser(
         in egress_intrinsic_metadata_for_deparser_t eg_dprsr_md) {
 
     apply {
-        pkt.emit(hdr);
+        pkt.emit(hdr.ethernet);
+        pkt.emit(hdr.ipv4);
+        pkt.emit(hdr.udp);
+        pkt.emit(hdr.unicache);
     }
 }
 
@@ -478,6 +473,9 @@ control SwitchEgress(
 
 
     apply {
+        if (hdr.mirror.pkt_type == 2){
+            hdr.mirror.pkt_type = 3;
+        }
         if (eg_intr_md.egress_port == RECIR_PORT){//recirculate port
             if (hdr.unicache.op == OP_READ){
                  hdr.unicache.pkg_offset = hdr.unicache.pkg_offset + 1;
