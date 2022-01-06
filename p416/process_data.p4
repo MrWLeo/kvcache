@@ -1,8 +1,8 @@
 #define REGISTER_GET(i) \
-    Register<bit<32>, INDEX_WIDTH>(16) reg_data_1_##i; \
-    Register<bit<32>, INDEX_WIDTH>(16) reg_data_2_##i; \
-    Register<bit<32>, INDEX_WIDTH>(16) reg_data_3_##i; \
-    Register<bit<32>, INDEX_WIDTH>(16) reg_data_4_##i; \
+    Register<bit<32>, INDEX_WIDTH>(256) reg_data_1_##i; \
+    Register<bit<32>, INDEX_WIDTH>(256) reg_data_2_##i; \
+    Register<bit<32>, INDEX_WIDTH>(256) reg_data_3_##i; \
+    Register<bit<32>, INDEX_WIDTH>(256) reg_data_4_##i; \
 
 #define READ_DATA_REG_SLICE(i,j) \
     RegisterAction<bit<32> , INDEX_WIDTH , bit<32> >(reg_data_##i##_##j ) read_data_##i##_##j##_action = { \
