@@ -85,12 +85,14 @@ control Read_Handle(
         tab_get_cache_index_num.apply();
         //tab_get_hash.apply();
         //tab_get_no_action.apply();
-        if (ig_md.sample == 1){
+        if (ig_md.sample == 0){
             tab_get_rand_robin.apply();
         }
         else{
             tab_get_hash.apply();
         }
         tab_set_forward_server.apply();
+        if (ig_md.l2_index_offset == 0) 
+            ig_md.l4_forward_flag = 0;
     }
 }
